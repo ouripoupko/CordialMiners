@@ -1,10 +1,16 @@
 import requests
+import hashlib
+from datetime import datetime
+import logging
 
 PAYLOAD = 'payload'
 CREATOR = 'creator'
+TIMESTAMP = 'timestamp'
 POINTERS = 'pointers'
 DEPTH = 'depth'
 HASHCODE = 'hash_code'
+
+logger = logging.getLogger('cordial_miners')
 
 # assumptions (forced by the logic of adding blocks to the blocklace):
 # 1- every block points to all tips. A fast miner will continue to point to the same tips of slower miners.
@@ -17,6 +23,7 @@ class Miner:
 
     def __init__(self, everyone, me):
         self.everyone = sorted(everyone)
+        self.others = [other for other in self.everyone if other != me]
         n = len(self.everyone)
         f = (n - 1) // 3
         self.super_majority = (n + f) // 2
@@ -36,6 +43,7 @@ class Miner:
         self.leader_collection = {}
         self.previous_final_leader = None
         self.outputBlocks = {}
+        self.messages = []
 
     # auxiliary functions
     def leaf_of_creator(self, head):
@@ -48,12 +56,14 @@ class Miner:
         return reply
 
     # Algorithm 1
-    def create_block(self, cycle):
-        block = {PAYLOAD: f'some message from agent {self.me} at round {cycle}',
+    def create_block(self, message):
+        block = {PAYLOAD: message,
                  CREATOR: self.me,
+                 TIMESTAMP: datetime.now().strftime('%Y%m%d%H%M%S%f'),
                  # TODO: check if can use tips directly
-                 POINTERS: [key for key in self.blocklace if self.blocklace[key][DEPTH] == cycle],
-                 DEPTH: cycle + 1}
+                 POINTERS: [key for key in self.blocklace if self.blocklace[key][DEPTH] == self.round],
+                 DEPTH: self.round + 1}
+        block['hash_code'] = hashlib.sha256(str(block).encode('utf-8')).hexdigest()
         return block
 
     def observes(self, observer, observed):
@@ -116,22 +126,31 @@ class Miner:
             children = {grand_child for child in children for grand_child in self.blocklace[child][POINTERS]}
         return in_tree and not equivocate
 
-    def ratifies(self, head, approvers):
-        depths = [block[DEPTH] for block in approvers]
-        hashes = {block[HASHCODE] for block in approvers}
-        min_depth = min(depths)
-        candidates = set()
+    def ratifies(self, head, block):
+        depth = self.blocklace[block][DEPTH]
+        approvers = set()
         observers = {head}
         while observers:
-            block = observers.pop()
-            for key in block[POINTERS]:
-                kid = self.blocklace[key]
-                if kid[DEPTH] > min_depth:
-                    observers.add(kid)
-                if kid[DEPTH] >= min_depth:
-                    candidates.add(key)
-        observed = [key for key in hashes if key in candidates]
-        return len(observed) > self.super_majority
+            observer = observers.pop()
+            if self.approves(observer, block):
+                approvers.add(self.blocklace[observer][CREATOR])
+            observers.update({child
+                              for child in self.blocklace[observer][POINTERS]
+                              if self.blocklace[child][DEPTH] >= depth})
+        return len(approvers) > self.super_majority
+
+    def super_ratifies(self, head, block):
+        depth = self.blocklace[block][DEPTH]
+        ratifiers = set()
+        observers = {head}
+        while observers:
+            observer = observers.pop()
+            if self.ratifies(observer, block):
+                ratifiers.add(self.blocklace[observer][CREATOR])
+                observers.update({child
+                                  for child in self.blocklace[observer][POINTERS]
+                                  if self.blocklace[child][DEPTH] >= depth})
+        return len(ratifiers) > self.super_majority
 
     def blocklace_prefix(self, depth):
         return {block for block in self.blocklace if block[DEPTH] <= depth}
@@ -152,7 +171,7 @@ class Miner:
         previous = self.previous_ratified_leader(block)
         self.tau_prime(previous)
         output = self.xsort(block, self.closure(block) - self.closure(previous))
-        print(output)
+        logger.debug(output)
         self.outputBlocks.update(output)
 
     def xsort(self, head, candidates):
@@ -205,12 +224,27 @@ class Miner:
 
 
     # Algorithm 3
-    def receive(self, block):
+    def receive(self, message):
+        self.messages.append(message)
+        completed = self.completed_round()
+        logger.debug(f'completed round {completed} and I am in round {self.round}')
+        if completed >= self.round:
+            block = self.create_block(self.messages)
+            logger.debug(f'create block {block}')
+            self.messages = []
+            self.round = block[DEPTH]
+            logger.debug(f'send it to {self.others}')
+            for agent in self.others:
+                requests.post(f'http://localhost:{agent}/blocks', json=[block])
+            self.buffer[block[HASHCODE]] = block
+            while self.process_buffer():
+                continue
+
+    def receive_block(self, block):
         if self.correct_block(block):
             self.buffer[block[HASHCODE]] = block
         while self.process_buffer():
             continue
-        self.advance_round()
 
     def process_buffer(self):
         should_repeat = False
@@ -223,14 +257,6 @@ class Miner:
                 self.tau(block)
                 should_repeat = True
         return should_repeat and self.buffer
-
-    def advance_round(self):
-        completed = self.completed_round()
-        if completed >= self.round:
-            block = self.create_block(completed)
-            self.round = block[DEPTH]
-            for agent in self.everyone:
-                requests.post(f'http://localhost:{agent}/blocks', json=block)
 
     def accept_block(self, block):
         key = block[HASHCODE]
@@ -306,9 +332,12 @@ class Miner:
             finals = {ratifier for ratifier in tops if self.blocklace[ratifier][CREATOR] == leader}
         return len(finals) > 0
 
-    # TODO: this is too complicated to understand
-    def es_completed_round(self, block):
-        pass
+    # TODO: copying from async. We defer from the paper here
+    def es_completed_round(self):
+        cycle = 1
+        while self.cordial_round(cycle):
+            cycle += 1
+        return cycle-1
 
 # TODO: remove old blocks from buffer, so it won't explode
 # TODO: verify hash codes
