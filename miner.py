@@ -36,13 +36,11 @@ class Miner:
         self.blocklace = {}
         self.tips = {}
         self.equivocators = {}
-        self.wavelength = 3
+        self.wavelength = 4
         self.leader = self.es_leader
-        self.final_leader = self.es_final_leader
         self.completed_round = self.es_completed_round
-        self.leader_collection = {}
         self.previous_final_leader = None
-        self.outputBlocks = {}
+        self.outputBlocks = []
         self.messages = []
 
     # auxiliary functions
@@ -76,6 +74,8 @@ class Miner:
 
     # TODO: make sure we don't use this horrible function
     def closure(self, head):
+        if not head:
+            return set()
         block = self.blocklace[head]
         children = set(block[POINTERS])
         reply = {head}
@@ -91,7 +91,7 @@ class Miner:
         c3 = self.observes(key2, key1)
         return c1 and not c2 and not c3
 
-    def equivocator(self, q, b):
+    def equivocator(self, _q, _b):
         # I trust that there are no equivocators, because I check them when adding a new block to the blocklace
         return self is None
 
@@ -140,10 +140,10 @@ class Miner:
                               if self.blocklace[child][DEPTH] >= depth})
         return len(approvers) > self.super_majority
 
-    def super_ratifies(self, head, key):
+    def super_ratifies(self, heads, key):
         depth = self.blocklace[key][DEPTH]
         ratifiers = set()
-        observers = {head}
+        observers = set(heads)
         while observers:
             observer = observers.pop()
             if self.ratifies(observer, key):
@@ -153,8 +153,8 @@ class Miner:
                                   if self.blocklace[child][DEPTH] >= depth})
         return len(ratifiers) > self.super_majority
 
-    def blocklace_prefix(self, depth):
-        return {block for block in self.blocklace if block[DEPTH] <= depth}
+    def blocklace_prefix(self, min_depth, max_depth):
+        return {block for block in self.blocklace if min_depth < self.blocklace[block][DEPTH] <= max_depth}
 
     def cordial_round(self, cycle):
         creators = {block[CREATOR] for block in self.blocklace.values() if block[DEPTH] == cycle}
@@ -162,8 +162,8 @@ class Miner:
         return len(creators) > self.super_majority
 
     # Algorithm 2
-    def tau(self, key):
-        final_leader = self.last_final_leader(key)
+    def tau(self):
+        final_leader = self.last_final_leader()
         if final_leader:
             self.tau_prime(final_leader)
 
@@ -172,59 +172,54 @@ class Miner:
             return
         previous = self.previous_ratified_leader(key)
         self.tau_prime(previous)
-        output = self.xsort(key, self.closure(key) - self.closure(previous))
-        logger.debug(output)
-        self.outputBlocks.update(output)
+        output = self.x_sort(key, self.closure(key) - self.closure(previous))
+        logger.info(output)
+        self.outputBlocks.extend(output)
 
-    def xsort(self, head, candidates):
-        # TODO: unclear how to sort
-        return list(candidates, key=lambda x: self.blocklace[x][DEPTH])
+    def dfs(self, head):
+        order = []
+        for kid in self.blocklace[head][POINTERS]:
+            order = list(dict.fromkeys(order + self.dfs(kid)))
+        return list(dict.fromkeys(order + (self.blocklace[head][POINTERS])))
 
-    def arg_max_depth(self, keys):
-        max_depth = 0
-        reply = None
-        for key in keys:
-            if self.blocklace[key][DEPTH] > max_depth:
-                max_depth = self.blocklace[key][DEPTH]
-                reply = self.blocklace[key]
-        return reply
+    def x_sort(self, head, candidates):
+        order = self.dfs(head) + [head]
+        return list(sorted(candidates, key=order.index))
 
     def previous_ratified_leader(self, head):
-        R = {block
-             for block in self.closure(head)
-             if block is not head
-             and self.ratifies(head, block)
-             and self.blocklace[block][CREATOR] == self.leader(self.blocklace[block][DEPTH])}
-        return self.arg_max_depth(R)
+        depth = self.blocklace[head][DEPTH] - 1
+        children = set(self.blocklace[head][POINTERS])
+        while depth >= 0:
+            leader = self.leader(depth)
+            depth_keys = {key for key in children if self.blocklace[key][DEPTH] == depth}
+            leader_keys = {key for key in depth_keys if self.blocklace[key][CREATOR] == leader}
+            for key in leader_keys:
+                if self.ratifies(head, key):
+                    return key
+            grandchildren = {key for child in depth_keys for key in self.blocklace[child][POINTERS]}
+            children -= depth_keys
+            children |= grandchildren
+            depth -= 1
+        return None
 
-    def last_final_leader(self, key):
-        block = self.blocklace[key]
-        depth = block[DEPTH]
-        previous_final = self.blocklace.get(self.previous_final_leader)
-        if previous_final and depth <= previous_final[DEPTH]:
-            return None
-        leader_id = self.leader(depth)
-        if leader_id == block[CREATOR]:
-            self.leader_collection[depth] = {'leader': block[HASHCODE], 'ratifications': {}, 'super': {}}
-            return None
-        wave_start = depth - depth % self.wavelength
-        if wave_start not in self.leader_collection:
-            return None
-        collection = self.leader_collection[wave_start]
-        leader_key = collection['leader']
-        leader_block = self.blocklace[leader_key]
-        if block[CREATOR] not in collection['ratifications']:
-            if self.approves(key, leader_key):
-                collection['ratifications'][block[CREATOR]] = block[HASHCODE]
-        if len(collection['ratifications']) <= self.super_majority:
-            return None
-        if block[CREATOR] not in collection['super']:
-            if self.ratifies(key, {self.blocklace[key2] for key2 in collection['ratifications'].values()}):
-                collection['super'][block[CREATOR]] = block[HASHCODE]
-        if len(collection['super']) <= self.super_majority:
-            return None
-        return leader_block
+    def last_final_leader(self):
+        depth = self.completed_round()
+        while depth >= 0:
+            leader = self.leader(depth)
+            if leader:
+                leader_keys = [key
+                               for key in self.blocklace
+                               if self.blocklace[key][CREATOR] == leader and self.blocklace[key][DEPTH] == depth]
+                for key in leader_keys:
+                    if self.final_leader(key):
+                        return key
+            depth -= 1
+        return None
 
+    def final_leader(self, key):
+        depth = self.blocklace[key][DEPTH]
+        prefix = self.blocklace_prefix(depth, depth + self.wavelength)
+        return self.super_ratifies(prefix, key)
 
     # Algorithm 3
     def receive(self, message):
@@ -259,7 +254,7 @@ class Miner:
             if not dangling_pointers and self.cordial_block(block):
                 self.accept_block(block)
                 to_delete.append(key)
-                self.tau(key)
+                self.tau()
                 should_repeat = True
         for key in to_delete:
             del self.buffer[key]
@@ -309,13 +304,6 @@ class Miner:
             return None
         return self.everyone[depth // len(self.everyone)]
 
-    def async_final_leader(self, block):
-        depth = block[DEPTH] + self.wavelength - 1
-        prefix = self.blocklace_prefix(depth)
-        Blocks = {ratifier for ratifier in prefix if self.ratifies(ratifier, block)}
-        creators = {ratifier[CREATOR] for ratifier in Blocks}
-        return len(creators) > self.super_majority
-
     def async_completed_round(self):
         cycle = 0
         while self.cordial_round(cycle):
@@ -326,18 +314,6 @@ class Miner:
         if depth % self.wavelength:
             return None
         return self.everyone[(depth // self.wavelength) % len(self.everyone)]
-
-    def es_final_leader(self, block):
-        depth = block[DEPTH] + self.wavelength
-        prefix = self.blocklace_prefix(depth)
-        ratifiers = {candidate for candidate in prefix if self.ratifies(candidate, block)}
-        creators = {ratifier[CREATOR] for ratifier in ratifiers}
-        finals = {}
-        if len(creators) > self.super_majority:
-            tops = {ratifier for ratifier in ratifiers if self.blocklace[ratifier][DEPTH] == depth}
-            leader = self.leader(depth)
-            finals = {ratifier for ratifier in tops if self.blocklace[ratifier][CREATOR] == leader}
-        return len(finals) > 0
 
     # TODO: copying from async. We defer from the paper here
     def es_completed_round(self):

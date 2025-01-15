@@ -15,7 +15,7 @@ werkzeug_logger.setLevel(logging.ERROR)
 
 # Create a separate logger for your application
 logger = logging.getLogger('cordial_miners')  # Custom logger name
-logger.setLevel(logging.DEBUG)  # Set to DEBUG level
+logger.setLevel(logging.INFO)  # Set to DEBUG level
 
 # Configure the handler and formatter for the app logger
 handler = logging.StreamHandler()  # Log to console
@@ -32,16 +32,16 @@ miner = Miner(list(range(5000, 5010)), int(sys.argv[1]))
 @app.route('/message', methods=['POST'])
 def message_handler():
     message = request.get_json() if request.is_json else None
-    logger.info(message)
+    logger.debug(message)
     miner.receive(message)
-    return Response("Success", status=200)
+    return Response(f'miner {miner.me} round {miner.round} blocks {len(miner.blocklace)} output {len(miner.outputBlocks)}', status=200)
 
 
 # Create a URL route in our application for DA messages
 @app.route('/blocks', methods=['POST'])
 def blocks_handler():
     blocks = request.get_json() if request.is_json else None
-    logger.info(blocks)
+    logger.debug(blocks)
     for block in blocks:
         miner.receive_block(block)
     return Response("Success", status=200)

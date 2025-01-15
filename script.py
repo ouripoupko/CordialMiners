@@ -13,8 +13,10 @@ counter = 0
 while True:
     i = random.randint(0, 9)
     print(f'sending message {counter} to agent {i}')
-    requests.post(servers[i],
-                  json=f'message {counter}')
+    reply = requests.post(servers[i], json=f'message {counter}')
+    print(reply.text)
+    if reply.status_code != 200:
+        input()
     counter = counter+1
-    input()
+    sleep(0.5)
 
