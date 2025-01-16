@@ -34,7 +34,7 @@ def message_handler():
     message = request.get_json() if request.is_json else None
     logger.debug(message)
     miner.receive(message)
-    return Response(f'miner {miner.me} round {miner.round} blocks {len(miner.blocklace)} output {len(miner.outputBlocks)}', status=200)
+    return Response(f'miner {miner.me} round {miner.round} blocks {len(miner.blocklace)} output {len(miner.outputBlocks)} equivocators {miner.equivocators}', status=200)
 
 
 # Create a URL route in our application for DA messages

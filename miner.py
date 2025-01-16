@@ -17,7 +17,7 @@ logger = logging.getLogger('cordial_miners')
 # 2- every block points to the previous block of the same miner.
 # 3- 'tips' holds the tips of all good miners.
 # 4- 'equivocators' holds all visible tips of all visible equivocators.
-# 5- every tip holds a chain of its creator all the way to depth 0.
+# 5- every tip holds a chain of its creator which does not need to be sequential and not necessarily starts with 0.
 
 class Miner:
 
@@ -29,17 +29,13 @@ class Miner:
         self.super_majority = (n + f) // 2
         self.me = me
         self.round = -1
-        self.round_collection = {}
-        self.next_non_final_round = 0
-        self.max_depth = 0
         self.buffer = {}
         self.blocklace = {}
         self.tips = {}
         self.equivocators = {}
-        self.wavelength = 4
+        self.wavelength = 3
         self.leader = self.es_leader
         self.completed_round = self.es_completed_round
-        self.previous_final_leader = None
         self.outputBlocks = []
         self.messages = []
 
@@ -55,12 +51,22 @@ class Miner:
 
     # Algorithm 1
     def create_block(self, message):
+        if self.round == 2:
+            print('gotcha')
         block = {PAYLOAD: message,
                  CREATOR: self.me,
                  TIMESTAMP: datetime.now().strftime('%Y%m%d%H%M%S%f'),
                  # TODO: check if can use tips directly
-                 POINTERS: [key for key in self.blocklace if self.blocklace[key][DEPTH] == self.round-1],
+                 POINTERS: [],
                  DEPTH: self.round}
+        for tip in self.tips:
+            tip_key = self.tips[tip]
+            while tip_key and self.blocklace[tip_key][DEPTH] >= self.round:
+                tip_key = next((kid
+                                  for kid in self.blocklace[tip_key][POINTERS]
+                                  if self.blocklace[kid][CREATOR] == self.blocklace[tip_key][CREATOR]), None)
+            if tip_key:
+                block[POINTERS].append(tip_key)
         block['hash_code'] = hashlib.sha256(str(block).encode('utf-8')).hexdigest()
         return block
 
@@ -151,6 +157,7 @@ class Miner:
                 observers.update({child
                                   for child in self.blocklace[observer][POINTERS]
                                   if self.blocklace[child][DEPTH] >= depth})
+        logger.debug(f'{len(ratifiers)} ratify {key} at depth {depth}')
         return len(ratifiers) > self.super_majority
 
     def blocklace_prefix(self, min_depth, max_depth):
@@ -173,7 +180,7 @@ class Miner:
         previous = self.previous_ratified_leader(key)
         self.tau_prime(previous)
         output = self.x_sort(key, self.closure(key) - self.closure(previous))
-        logger.info(output)
+        print(output)
         self.outputBlocks.extend(output)
 
     def dfs(self, head):
@@ -265,7 +272,6 @@ class Miner:
         if key in self.blocklace:
             return False
         self.blocklace[key] = block
-        self.max_depth = max(self.max_depth, block[DEPTH])
         creator = block[CREATOR]
         if creator in self.tips:
             tip = self.tips[creator]
@@ -278,7 +284,7 @@ class Miner:
             observed = {tip for tip in self.equivocators[creator] if tip in block[POINTERS]}
             self.equivocators[creator] -= observed
             self.equivocators[creator].add(key)
-        elif block[DEPTH] == 0:
+        else:
             self.tips[creator] = key
 
     def cordial_block(self, block):
