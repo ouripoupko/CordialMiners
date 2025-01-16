@@ -36,7 +36,7 @@ class Miner:
         self.wavelength = 3
         self.leader = self.es_leader
         self.completed_round = self.es_completed_round
-        self.outputBlocks = []
+        self.outputBlocks = set()
         self.messages = []
 
     # auxiliary functions
@@ -56,7 +56,6 @@ class Miner:
         block = {PAYLOAD: message,
                  CREATOR: self.me,
                  TIMESTAMP: datetime.now().strftime('%Y%m%d%H%M%S%f'),
-                 # TODO: check if can use tips directly
                  POINTERS: [],
                  DEPTH: self.round}
         for tip in self.tips:
@@ -78,8 +77,7 @@ class Miner:
             children = {grand_child for child in children for grand_child in self.blocklace[child][POINTERS]}
         return False
 
-    # TODO: make sure we don't use this horrible function
-    def closure(self, head):
+    def closure_dont_use_this_function(self, head):
         if not head:
             return set()
         block = self.blocklace[head]
@@ -90,8 +88,7 @@ class Miner:
             children = {grand_child for child in children for grand_child in self.blocklace[child][POINTERS]}
         return reply
 
-    # TODO: make sure we don't use this horrible function
-    def equivocation(self, key1, key2):
+    def equivocation_dont_use_this_function(self, key1, key2):
         c1 = self.blocklace[key1][CREATOR] == self.blocklace[key2][CREATOR]
         c2 = self.observes(key1, key2)
         c3 = self.observes(key2, key1)
@@ -179,19 +176,21 @@ class Miner:
             return
         previous = self.previous_ratified_leader(key)
         self.tau_prime(previous)
-        output = self.x_sort(key, self.closure(key) - self.closure(previous))
-        print(output)
-        self.outputBlocks.extend(output)
+        # instead of using closure we track output blocks
+        output = self.x_sort(key)
+        for item in output:
+            print(self.blocklace[item][PAYLOAD])
 
-    def dfs(self, head):
+    # instead of using closure, x_sort emits anything that was not emitted yet
+    # x_sort is a depth first search recursive function
+    def x_sort(self, head):
         order = []
         for kid in self.blocklace[head][POINTERS]:
-            order = list(dict.fromkeys(order + self.dfs(kid)))
-        return list(dict.fromkeys(order + (self.blocklace[head][POINTERS])))
-
-    def x_sort(self, head, candidates):
-        order = self.dfs(head) + [head]
-        return list(sorted(candidates, key=order.index))
+            if kid not in self.outputBlocks:
+                order.extend(self.x_sort(kid))
+                self.outputBlocks.update(order)
+        self.outputBlocks.add(head)
+        return order + [head]
 
     def previous_ratified_leader(self, head):
         depth = self.blocklace[head][DEPTH] - 1
@@ -202,6 +201,7 @@ class Miner:
             leader_keys = {key for key in depth_keys if self.blocklace[key][CREATOR] == leader}
             for key in leader_keys:
                 if self.ratifies(head, key):
+                    logger.debug(f'found previous_ratified_leader {leader} at depth {depth}')
                     return key
             grandchildren = {key for child in depth_keys for key in self.blocklace[child][POINTERS]}
             children -= depth_keys
@@ -217,9 +217,14 @@ class Miner:
                 leader_keys = [key
                                for key in self.blocklace
                                if self.blocklace[key][CREATOR] == leader and self.blocklace[key][DEPTH] == depth]
+                if not leader_keys:
+                    logger.debug(f'no blocks for leader {leader} at depth {depth}')
                 for key in leader_keys:
                     if self.final_leader(key):
+                        logger.debug(f'leader {leader} is final at depth {depth}')
                         return key
+                    else:
+                        logger.debug(f'leader {leader} at depth {depth} is not final')
             depth -= 1
         return None
 
@@ -232,25 +237,31 @@ class Miner:
     def receive(self, message):
         self.messages.append(message)
         completed = self.completed_round()
-        logger.debug(f'completed round {completed} and I am in round {self.round}')
+        logger.debug(f'completed round {completed} and I am in round {self.round} received message {message}')
         if completed >= self.round:
             self.round = completed + 1
             block = self.create_block(self.messages)
             logger.debug(f'create block {block}')
             self.messages = []
             for agent in self.others:
+                logger.debug(f'sending the block to {agent}')
                 requests.post(f'http://localhost:{agent}/blocks', json=[block])
             self.buffer[block[HASHCODE]] = block
             while self.process_buffer():
+                logger.debug(f'{len(self.buffer)} messages in buffer')
                 continue
+            logger.debug(f'creator {block[CREATOR]}depth {block[DEPTH]}')
             logger.debug(f'\nbuffer: {list(self.buffer.keys())}\naccepted: {list(self.blocklace.keys())}')
 
     def receive_block(self, block):
         if self.correct_block(block):
             self.buffer[block[HASHCODE]] = block
+        logger.debug(f'received block with message {block[PAYLOAD]}')
         while self.process_buffer():
+            logger.debug(f'{len(self.buffer)} messages in buffer')
             continue
-        logger.debug(f'\ncreator {block[CREATOR]}\ndepth {block[DEPTH]}\nbuffer: {list(self.buffer.keys())}\naccepted: {list(self.blocklace.keys())}')
+        logger.debug(f'creator {block[CREATOR]}depth {block[DEPTH]}')
+        logger.debug(f'\nbuffer: {list(self.buffer.keys())}\naccepted: {list(self.blocklace.keys())}')
 
     def process_buffer(self):
         should_repeat = False
