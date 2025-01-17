@@ -51,8 +51,6 @@ class Miner:
 
     # Algorithm 1
     def create_block(self, message):
-        if self.round == 2:
-            print('gotcha')
         block = {PAYLOAD: message,
                  CREATOR: self.me,
                  TIMESTAMP: datetime.now().strftime('%Y%m%d%H%M%S%f'),
@@ -179,7 +177,8 @@ class Miner:
         # instead of using closure we track output blocks
         output = self.x_sort(key)
         for item in output:
-            print(self.blocklace[item][PAYLOAD])
+            for message in self.blocklace[item][PAYLOAD]:
+                print(message)
 
     # instead of using closure, x_sort emits anything that was not emitted yet
     # x_sort is a depth first search recursive function
@@ -235,11 +234,12 @@ class Miner:
 
     # Algorithm 3
     def receive(self, message):
-        self.messages.append(message)
+        if message:
+            self.messages.append(message)
         completed = self.completed_round()
         logger.debug(f'completed round {completed} and I am in round {self.round} received message {message}')
         if completed >= self.round:
-            self.round = completed + 1
+            self.round = completed if self.round < completed else completed + 1
             block = self.create_block(self.messages)
             logger.debug(f'create block {block}')
             self.messages = []
@@ -260,6 +260,8 @@ class Miner:
         while self.process_buffer():
             logger.debug(f'{len(self.buffer)} messages in buffer')
             continue
+        if self.messages:
+            self.receive(None)
         logger.debug(f'creator {block[CREATOR]}depth {block[DEPTH]}')
         logger.debug(f'\nbuffer: {list(self.buffer.keys())}\naccepted: {list(self.blocklace.keys())}')
 
