@@ -38,6 +38,7 @@ class Miner:
         self.completed_round = self.es_completed_round
         self.outputBlocks = set()
         self.messages = []
+        self.final_leaders = {}
 
     # auxiliary functions
     def leaf_of_creator(self, head):
@@ -209,8 +210,11 @@ class Miner:
         return None
 
     def last_final_leader(self):
-        depth = self.completed_round()
+        # final leader necessarily has two completed round above it (I think)
+        depth = self.completed_round()-2
         while depth >= 0:
+            if depth in self.final_leaders:
+                return self.final_leaders[depth]
             leader = self.leader(depth)
             if leader:
                 leader_keys = [key
@@ -221,6 +225,7 @@ class Miner:
                 for key in leader_keys:
                     if self.final_leader(key):
                         logger.debug(f'leader {leader} is final at depth {depth}')
+                        self.final_leaders[depth] = key
                         return key
                     else:
                         logger.debug(f'leader {leader} at depth {depth} is not final')

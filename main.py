@@ -7,7 +7,7 @@ import threading
 import queue
 from time import sleep
 
-from miner import Miner
+from miner import Miner, DEPTH, PAYLOAD
 
 # Create the application instance
 app = Flask(__name__, static_folder='static', instance_path=f'{os.getcwd()}/instance')
@@ -30,35 +30,45 @@ logger.addHandler(handler)
 
 miner = Miner(list(range(5000, 5010)), int(sys.argv[1]))
 message_queue = queue.Queue()
-block_queue = queue.Queue()
+block_queue = queue.PriorityQueue()
+
+class OrderedBlock:
+    def __init__(self, block, order):
+        self.block = block
+        self.order = order
+
+    def __lt__(self, other):
+        return self.order < other.order
 
 def queue_reader():
     counter = 0
     while True:
-        both_empty = True
-        counter = 0
-        while miner.messages and not block_queue.empty():
-            both_empty = False
-            miner.receive_block(block_queue.get())
-            block_queue.task_done()
-        if not message_queue.empty():
-            both_empty = False
+        ordered_block = None if block_queue.empty() else block_queue.get()
+        message_exists = not message_queue.empty()
+        prioritise_block = ordered_block is not None and ordered_block.order <= miner.round
+        if message_exists and not prioritise_block:
             miner.receive(message_queue.get())
             message_queue.task_done()
-        if not block_queue.empty():
-            both_empty = False
-            miner.receive_block(block_queue.get())
-            block_queue.task_done()
-        if both_empty:
+        if ordered_block:
+            if prioritise_block or not message_exists:
+                miner.receive_block(ordered_block.block)
+            else:
+                block_queue.put(ordered_block)
+        if message_exists or ordered_block is not None:
+            counter = 0
+        else:
             if counter == 10:
-                counter = 0
-                if len(miner.blocklace) > len(miner.outputBlocks):
+                waiting_blocks = [key for key in miner.blocklace
+                                  if key not in miner.outputBlocks and miner.blocklace[key][PAYLOAD]]
+                logger.info(f'{len(waiting_blocks)} blocks waiting')
+                if waiting_blocks:
+                    counter = 0
                     miner.receive(None)
+                else:
+                    counter += 1
             else:
                 counter += 1
                 sleep(0.1)
-        else:
-            counter = 0
         logger.debug(f'number of messages {message_queue.qsize()} number of blocks {block_queue.qsize()}')
 
 reader_thread = threading.Thread(target=queue_reader, daemon=True)
@@ -77,7 +87,8 @@ def message_handler():
 def blocks_handler():
     blocks = request.get_json() if request.is_json else None
     for block in blocks:
-        block_queue.put(block)
+        if DEPTH in block:
+            block_queue.put(OrderedBlock(block, block[DEPTH]))
     return Response("Success", status=200)
 
 

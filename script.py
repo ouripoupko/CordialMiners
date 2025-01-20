@@ -1,7 +1,6 @@
 import requests
 import threading
 from time import sleep
-import random
 
 servers = [f'http://localhost:{index}/message' for index in range(5000, 5010)]
 print(servers)
@@ -13,7 +12,7 @@ def bombard_away(my_server):
         print(reply.text)
         if reply.status_code != 200:
             input()
-        sleep(0.5+index/10)
+        sleep(0.1)
 
 # Create a thread and target the function
 for server in servers:
